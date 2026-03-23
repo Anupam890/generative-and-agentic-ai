@@ -1,0 +1,15 @@
+openai
+langchain
+tiktoken
+huggingface
+fastapi
+transformers
+google-genai
+python-dotenv
+requests
+langchain_community
+pypdf
+beautifulsoup4
+langchain-text-splitters
+requests
+langchain-google-genai
