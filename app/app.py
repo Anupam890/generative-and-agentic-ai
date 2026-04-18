@@ -16,9 +16,11 @@ from agents.agents import (
     build_critic_chain,
     build_fact_checker_chain,
     build_comparison_chain,
+    build_graph_data_chain,
     parse_critic_score,
     AVAILABLE_MODELS,
 )
+from charts.charts import parse_chart_data, generate_charts
 from pipeline.pipeline import (
     save_to_history,
     load_history,
@@ -296,6 +298,7 @@ AGENT_DEFS = [
     ("✍️",  "Writer Agent",   "Synthesizing the research report"),
     ("🎯", "Critic Agent",   "Reviewing & scoring the report"),
     ("🔎", "Fact Checker",   "Verifying claims against sources"),
+    ("📊", "Analytics",      "Extracting charts from data"),
 ]
 
 
@@ -532,13 +535,31 @@ if run:
             feedback = critic.invoke({"topic": f"Comparison: {', '.join(topics)}", "report": report})
             score = parse_critic_score(feedback)
 
-            render_agents(active=None, done=[0, 1, 2, 3])
+            # Step 4: Analytics (graph extraction)
+            render_agents(active=5, done=[0, 1, 2, 3])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 4 — Extracting analytics</div>
+                <div class="search-box">📊 Detecting chartable data in report...</div>
+                """, unsafe_allow_html=True)
+
+            try:
+                graph_chain = build_graph_data_chain(model)
+                raw_chart_json = graph_chain.invoke({"report": report})
+                chart_specs = parse_chart_data(raw_chart_json)
+                chart_images = generate_charts(chart_specs)
+            except Exception:
+                chart_specs, chart_images = [], []
+
+            render_agents(active=None, done=[0, 1, 2, 3, 5])
             output_area.empty()
 
             state["research_report"] = report
             state["critic_feedback"] = feedback
             state["critic_score"] = score
             state["search_results"] = combined
+            state["chart_specs"] = chart_specs
+            state["chart_images"] = chart_images
             state["timings"]["total"] = round(time.time() - start_time, 1)
 
         else:
@@ -669,6 +690,26 @@ Guidelines: objective, factual, professional, minimum 500 words."""
             state["fact_check"] = fact_check
             state["timings"]["fact_check"] = round(time.time() - t0, 1)
 
+            # Step 6: Analytics (graph extraction)
+            render_agents(active=5, done=[0, 1, 2, 3, 4])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 6 of 6</div>
+                <div class="search-box">📊 Detecting chartable data in report...</div>
+                """, unsafe_allow_html=True)
+
+            t0 = time.time()
+            try:
+                graph_chain = build_graph_data_chain(model)
+                raw_chart_json = graph_chain.invoke({"report": state["research_report"]})
+                chart_specs = parse_chart_data(raw_chart_json)
+                chart_images = generate_charts(chart_specs)
+            except Exception:
+                chart_specs, chart_images = [], []
+            state["chart_specs"] = chart_specs
+            state["chart_images"] = chart_images
+            state["timings"]["analytics"] = round(time.time() - t0, 1)
+
             state["timings"]["total"] = round(time.time() - start_time, 1)
 
         # ── All done ──────────────────────────────────────────────────────
@@ -701,11 +742,23 @@ if st.session_state.results:
         scores = [r["score"] for r in revisions]
         st.caption(f"Revision scores: {' → '.join(str(s) for s in scores)}")
 
-    tabs = ["📄 Final Report", "🎯 Critic Feedback", "🔎 Fact Check", "🔍 Raw Research", "⬇️ Export"]
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(tabs)
+    tabs = ["📄 Final Report", "📊 Analytics", "🎯 Critic Feedback", "🔎 Fact Check", "🔍 Raw Research", "⬇️ Export"]
+    tab1, tab_analytics, tab2, tab3, tab4, tab5 = st.tabs(tabs)
 
     with tab1:
         st.markdown(results.get("research_report", ""), unsafe_allow_html=False)
+
+    with tab_analytics:
+        chart_images = results.get("chart_images", [])
+        chart_specs = results.get("chart_specs", [])
+        if chart_images:
+            st.markdown(f"**{len(chart_images)} chart(s) generated from report data**")
+            for title, img_bytes in chart_images:
+                st.image(img_bytes, caption=title, use_container_width=True)
+        elif chart_specs:
+            st.info("Chart data was detected but could not be rendered. Ensure matplotlib is installed.")
+        else:
+            st.info("No chartable numerical data was detected in this report.")
 
     with tab2:
         st.markdown(f'<div class="critic-box">{results.get("critic_feedback", "")}</div>', unsafe_allow_html=True)
@@ -757,6 +810,8 @@ if st.session_state.results:
 
         with col_c:
             try:
+                import io as _io
+                import tempfile
                 from fpdf import FPDF
                 pdf = FPDF()
                 pdf.add_page()
@@ -775,8 +830,28 @@ if st.session_state.results:
                         pdf.multi_cell(0, 6, line)
                     else:
                         pdf.ln(3)
+
+                # Embed chart images into PDF
+                pdf_chart_images = results.get("chart_images", [])
+                if pdf_chart_images:
+                    pdf.add_page()
+                    pdf.set_font("Helvetica", "B", 14)
+                    pdf.cell(0, 10, "Analytics & Charts", new_x="LMARGIN", new_y="NEXT")
+                    pdf.ln(4)
+                    for chart_title, chart_bytes in pdf_chart_images:
+                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                        try:
+                            tmp.write(chart_bytes)
+                            tmp.close()
+                            pdf.set_font("Helvetica", "B", 11)
+                            pdf.cell(0, 8, chart_title, new_x="LMARGIN", new_y="NEXT")
+                            pdf.image(tmp.name, w=180)
+                            pdf.ln(6)
+                        finally:
+                            os.unlink(tmp.name)
+
                 st.download_button(
-                    "📕 PDF",
+                    "📕 PDF (with charts)" if pdf_chart_images else "📕 PDF",
                     data=bytes(pdf.output()),
                     file_name="research_report.pdf",
                     mime="application/pdf",

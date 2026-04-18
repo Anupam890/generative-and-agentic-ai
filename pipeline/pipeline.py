@@ -22,9 +22,11 @@ from agents.agents import (
     build_critic_chain,
     build_fact_checker_chain,
     build_comparison_chain,
+    build_graph_data_chain,
     parse_critic_score,
     AVAILABLE_MODELS,
 )
+from charts.charts import parse_chart_data, generate_charts
 
 
 def validate_api_keys(model_name: str = "mistral-small-latest"):
@@ -64,7 +66,8 @@ h1,h2,h3{{color:#1a1a2e;}}a{{color:#4f8ef7;}}</style></head>
     return filename
 
 
-def export_report_pdf(report: str, topic: str, filename: str = "research_report.pdf"):
+def export_report_pdf(report: str, topic: str, filename: str = "research_report.pdf", chart_images: list = None):
+    import tempfile
     from fpdf import FPDF
 
     pdf = FPDF()
@@ -87,6 +90,25 @@ def export_report_pdf(report: str, topic: str, filename: str = "research_report.
             pdf.multi_cell(0, 6, line)
         else:
             pdf.ln(3)
+
+    # Embed chart images if available
+    if chart_images:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, "Analytics & Charts", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+        for chart_title, chart_bytes in chart_images:
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            try:
+                tmp.write(chart_bytes)
+                tmp.close()
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.cell(0, 8, chart_title, new_x="LMARGIN", new_y="NEXT")
+                pdf.image(tmp.name, w=180)
+                pdf.ln(6)
+            finally:
+                os.unlink(tmp.name)
+
     pdf.output(filename)
     return filename
 
@@ -222,6 +244,22 @@ Guidelines: objective, factual, professional, minimum 500 words."""
     state["fact_check"] = fact_check
     state["timings"]["fact_check"] = round(time.time() - t0, 1)
     print(f"   ✅ Done ({state['timings']['fact_check']}s)")
+
+    # ── Step 6: Analytics (Graph Extraction) ─────────────────────────────────
+    print("📊 Step 6: Extracting chartable data...")
+    t0 = time.time()
+    try:
+        graph_chain = build_graph_data_chain(model_name)
+        raw_chart_json = graph_chain.invoke({"report": state["research_report"]})
+        chart_specs = parse_chart_data(raw_chart_json)
+        chart_images = generate_charts(chart_specs)
+        state["chart_specs"] = chart_specs
+        state["chart_images"] = chart_images
+        print(f"   ✅ Generated {len(chart_images)} chart(s) ({round(time.time() - t0, 1)}s)")
+    except Exception as e:
+        state["chart_specs"] = []
+        state["chart_images"] = []
+        print(f"   ⚠️ Analytics skipped: {e}")
 
     state["timings"]["total"] = round(time.time() - start_time, 1)
     print(f"\n🏁 Pipeline complete in {state['timings']['total']}s")
