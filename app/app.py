@@ -1,8 +1,29 @@
-import sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
+import time
+import os
+import json
 import streamlit as st
-from agents.agents import build_search_agent, build_reader_agent, writer_chain, critic_chain
+from datetime import datetime
+
+from agents.agents import (
+    build_search_agent,
+    build_reader_agent,
+    build_writer_chain,
+    build_revision_chain,
+    build_critic_chain,
+    build_fact_checker_chain,
+    build_comparison_chain,
+    parse_critic_score,
+    AVAILABLE_MODELS,
+)
+from pipeline.pipeline import (
+    save_to_history,
+    load_history,
+    export_report_markdown,
+    export_report_html,
+    export_report_pdf,
+    export_report_docx,
+    validate_api_keys,
+)
 
 # ── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -206,6 +227,16 @@ label, .stSelectbox label { color: #555570 !important; font-size: 0.75rem !impor
     max-height: 320px;
     overflow-y: auto;
 }
+.fact-box {
+    background: #111120;
+    border: 1px solid #1a1a2e;
+    border-left: 3px solid #f59e0b;
+    border-radius: 14px;
+    padding: 2rem 2.2rem;
+    line-height: 1.85;
+    font-size: 0.88rem;
+    color: #cccbdc;
+}
 
 /* ── Step badge ── */
 .step-badge {
@@ -225,6 +256,24 @@ label, .stSelectbox label { color: #555570 !important; font-size: 0.75rem !impor
     text-transform: uppercase;
 }
 
+/* ── Score badge ── */
+.score-badge {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1.2rem; border-radius: 999px;
+    font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem;
+    margin: 0.5rem 0;
+}
+.score-high { background: #0d2818; border: 1px solid #34d399; color: #34d399; }
+.score-mid  { background: #1a1a00; border: 1px solid #f59e0b; color: #f59e0b; }
+.score-low  { background: #1a0d0d; border: 1px solid #ef4444; color: #ef4444; }
+
+/* ── History card ── */
+.history-card {
+    background: #111120; border: 1px solid #1a1a2e; border-radius: 10px;
+    padding: 1rem 1.2rem; margin-bottom: 0.5rem; cursor: pointer;
+}
+.history-card:hover { border-color: #a78bfa; }
+
 /* ── Divider ── */
 hr { border-color: #1a1a2e !important; margin: 1.5rem 0 !important; }
 
@@ -237,6 +286,15 @@ hr { border-color: #1a1a2e !important; margin: 1.5rem 0 !important; }
 
 
 # ── Helper: render agent cards ───────────────────────────────────────────────
+AGENT_DEFS = [
+    ("🔍", "Search Agent",   "Gathering research from the web"),
+    ("📖", "Reader Agent",   "Extracting & structuring findings"),
+    ("✍️",  "Writer Agent",   "Synthesizing the research report"),
+    ("🎯", "Critic Agent",   "Reviewing & scoring the report"),
+    ("🔎", "Fact Checker",   "Verifying claims against sources"),
+]
+
+
 def agent_card(icon, name, desc, state="idle"):
     return f"""
     <div class="agent-card {state}">
@@ -252,14 +310,8 @@ def agent_card(icon, name, desc, state="idle"):
 
 def render_agents(active=None, done=None):
     done = done or []
-    agents = [
-        ("🔍", "Search Agent",  "Gathering research from the web"),
-        ("📖", "Reader Agent",  "Extracting & structuring findings"),
-        ("✍️",  "Writer Agent",  "Synthesizing the research report"),
-        ("🎯", "Critic Agent",  "Reviewing & scoring the report"),
-    ]
     html = ""
-    for i, (icon, name, desc) in enumerate(agents):
+    for i, (icon, name, desc) in enumerate(AGENT_DEFS):
         if i in done:
             s = "done"
         elif i == active:
@@ -270,19 +322,54 @@ def render_agents(active=None, done=None):
     agent_placeholder.markdown(html, unsafe_allow_html=True)
 
 
+def score_badge_html(score: int) -> str:
+    if score >= 8:
+        cls = "score-high"
+    elif score >= 5:
+        cls = "score-mid"
+    else:
+        cls = "score-low"
+    return f'<div class="score-badge {cls}">Score: {score}/10</div>'
+
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
     <div class="brand">
-        <div class="brand-title">🔬 ResearchMind</div>
+        <div class="brand-title">🔬 ResearchMind AI</div>
         <div class="brand-sub">Multi-Agent AI Research</div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("#### ⚙️ Configuration")
-    model = st.selectbox("Model", ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"], label_visibility="visible")
-    depth = st.selectbox("Research Depth", ["Standard", "Deep", "Quick"])
+
+    # Model selection - grouped by provider
+    model_options = list(AVAILABLE_MODELS.keys())
+    model = st.selectbox(
+        "Model",
+        model_options,
+        index=0,
+        format_func=lambda m: f"{m} ({AVAILABLE_MODELS[m]})",
+    )
+    depth = st.selectbox("Research Depth", ["Quick", "Standard", "Deep"], index=1)
     max_revisions = st.slider("Max Critic Revisions", 1, 5, 2)
+    score_threshold = st.slider("Score Threshold (stop revising)", 1, 10, 8)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Mode selection
+    st.markdown("#### 🔀 Mode")
+    mode = st.radio("Research Mode", ["Single Topic", "Compare Topics"], horizontal=True)
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # File upload
+    st.markdown("#### 📎 Upload Source Documents")
+    uploaded_files = st.file_uploader(
+        "Add PDFs or text files as extra research sources",
+        accept_multiple_files=True,
+        type=["pdf", "txt", "md"],
+    )
 
     st.markdown("<hr>", unsafe_allow_html=True)
     st.markdown("#### 🤖 Agent Pipeline")
@@ -290,11 +377,31 @@ with st.sidebar:
     render_agents()
 
     st.markdown("<hr>", unsafe_allow_html=True)
+
+    # Research history
+    st.markdown("#### 📜 Research History")
+    history = load_history()
+    if history:
+        for i, entry in enumerate(reversed(history[-10:])):
+            ts = entry.get("timestamp", "")[:16].replace("T", " ")
+            score = entry.get("critic_score", "?")
+            if st.button(f"📄 {entry['topic'][:30]}... ({score}/10)", key=f"hist_{i}"):
+                st.session_state.results = {
+                    "research_report": entry.get("report", ""),
+                    "critic_feedback": entry.get("critic_feedback", ""),
+                    "critic_score": entry.get("critic_score", 0),
+                    "fact_check": entry.get("fact_check", ""),
+                    "search_results": "",
+                    "revisions": [],
+                }
+                st.rerun()
+    else:
+        st.caption("No research history yet.")
+
     st.markdown("""
-    <div style='font-size:0.7rem; color:#333355; text-align:center; padding-bottom:1rem;'>
-        Powered by LangChain · Tavily · Mistral AI
-    </div>
-    """, unsafe_allow_html=True)
+    <div style='font-size:0.7rem; color:#333355; text-align:center; padding:1rem 0;'>
+        Powered by ResearchMind AI
+    </div>""", unsafe_allow_html=True)
 
 
 # ── Main Area ────────────────────────────────────────────────────────────────
@@ -307,7 +414,18 @@ st.markdown("""
 
 col1, col2, col3 = st.columns([1, 4, 1])
 with col2:
-    topic = st.text_input("", placeholder="e.g.  The impact of AI on global employment markets...")
+    if mode == "Single Topic":
+        topic = st.text_input(
+            "Research topic",
+            placeholder="e.g. The impact of AI on global employment markets...",
+            label_visibility="collapsed",
+        )
+    else:
+        topic = st.text_input(
+            "Topics to compare (comma-separated)",
+            placeholder="e.g. Solar energy, Wind energy, Nuclear energy",
+            label_visibility="collapsed",
+        )
     run = st.button("🚀  Run Research Pipeline")
 
 st.markdown("<hr>", unsafe_allow_html=True)
@@ -317,46 +435,144 @@ if "results" not in st.session_state:
     st.session_state.results = None
 
 
+# ── Extract uploaded file text ────────────────────────────────────────────────
+def extract_uploaded_text(files) -> str:
+    texts = []
+    for f in files:
+        if f.name.endswith(".pdf"):
+            try:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(f)
+                pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                texts.append(f"[From {f.name}]\n{pdf_text[:3000]}")
+            except Exception as e:
+                texts.append(f"[Failed to read {f.name}: {e}]")
+        else:
+            content = f.read().decode("utf-8", errors="ignore")
+            texts.append(f"[From {f.name}]\n{content[:3000]}")
+    return "\n\n".join(texts)
+
+
 # ── Pipeline execution ────────────────────────────────────────────────────────
 if run:
     if not topic.strip():
         st.warning("Please enter a research topic first.")
     else:
+        # Validate API keys
+        try:
+            validate_api_keys(model)
+        except EnvironmentError as e:
+            st.error(str(e))
+            st.stop()
+
         st.session_state.results = None
-        state = {}
+        state = {"revisions": [], "timings": {}}
+        start_time = time.time()
+
+        # Get uploaded file text
+        extra_context = ""
+        if uploaded_files:
+            extra_context = extract_uploaded_text(uploaded_files)
 
         col_l, col_r = st.columns([3, 2])
-
         with col_l:
             output_area = st.empty()
 
-        # ── Step 1: Search ──
-        render_agents(active=0, done=[])
-        with col_l:
-            output_area.markdown("""
-            <div class="step-badge">⟳ Step 1 of 4</div>
-            <div class="search-box">🔍 Searching the web for research on: <b>{}</b> ...</div>
-            """.format(topic), unsafe_allow_html=True)
+        if mode == "Compare Topics":
+            # ── COMPARISON MODE ──────────────────────────────────────────
+            topics = [t.strip() for t in topic.split(",") if t.strip()]
+            if len(topics) < 2:
+                st.warning("Please enter at least 2 topics separated by commas.")
+                st.stop()
 
-        search_agent = build_search_agent()
-        search_result = search_agent.invoke({
-            "messages": [{"role": "user", "content": f"Gather comprehensive research on: {topic}"}]
-        })
-        state["search_results"] = search_result["messages"][-1].content
+            render_agents(active=0, done=[])
+            with col_l:
+                output_area.markdown(f"""
+                <div class="step-badge">⟳ Step 1 — Researching {len(topics)} topics</div>
+                <div class="search-box">🔍 Searching for: <b>{', '.join(topics)}</b></div>
+                """, unsafe_allow_html=True)
 
-        # ── Step 2: Reader ──
-        render_agents(active=1, done=[0])
-        with col_l:
-            output_area.markdown("""
-            <div class="step-badge">⟳ Step 2 of 4</div>
-            <div class="search-box">📖 Reading and extracting key information...</div>
-            """, unsafe_allow_html=True)
+            per_topic = {}
+            for i, t in enumerate(topics):
+                search_agent = build_search_agent(model)
+                search_result = search_agent.invoke({
+                    "messages": [{"role": "user", "content": f"Research: {t}"}]
+                })
+                per_topic[t] = search_result["messages"][-1].content
 
-        reader_agent = build_reader_agent()
-        reader_result = reader_agent.invoke({
-            "messages": [{
-                "role": "user",
-                "content": f"""You are an expert research writer. Synthesize the research below into a structured report.
+            render_agents(active=2, done=[0, 1])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 2 — Writing comparative analysis</div>
+                <div class="search-box">📊 Generating comparison report...</div>
+                """, unsafe_allow_html=True)
+
+            combined = "\n\n".join(f"=== {t} ===\n{d}" for t, d in per_topic.items())
+            if extra_context:
+                combined += f"\n\n=== Uploaded Documents ===\n{extra_context}"
+
+            comparison = build_comparison_chain(model)
+            report = comparison.invoke({
+                "topics": ", ".join(topics),
+                "research": combined,
+            })
+
+            render_agents(active=3, done=[0, 1, 2])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 3 — Critic reviewing</div>
+                <div class="search-box">🎯 Evaluating comparison report...</div>
+                """, unsafe_allow_html=True)
+
+            critic = build_critic_chain(model)
+            feedback = critic.invoke({"topic": f"Comparison: {', '.join(topics)}", "report": report})
+            score = parse_critic_score(feedback)
+
+            render_agents(active=None, done=[0, 1, 2, 3])
+            output_area.empty()
+
+            state["research_report"] = report
+            state["critic_feedback"] = feedback
+            state["critic_score"] = score
+            state["search_results"] = combined
+            state["timings"]["total"] = round(time.time() - start_time, 1)
+
+        else:
+            # ── SINGLE TOPIC MODE ────────────────────────────────────────
+            max_search = {"Quick": 3, "Standard": 5, "Deep": 10}.get(depth, 5)
+
+            # Step 1: Search
+            render_agents(active=0, done=[])
+            with col_l:
+                output_area.markdown(f"""
+                <div class="step-badge">⟳ Step 1 of 5</div>
+                <div class="search-box">🔍 Searching the web for: <b>{topic}</b> ...</div>
+                """, unsafe_allow_html=True)
+
+            t0 = time.time()
+            search_agent = build_search_agent(model)
+            search_result = search_agent.invoke({
+                "messages": [{"role": "user", "content": f"Gather comprehensive research on: {topic}. Find at least {max_search} diverse sources."}]
+            })
+            state["search_results"] = search_result["messages"][-1].content
+            if extra_context:
+                state["search_results"] += f"\n\n=== Uploaded Documents ===\n{extra_context}"
+            state["timings"]["search"] = round(time.time() - t0, 1)
+
+            # Step 2: Reader
+            render_agents(active=1, done=[0])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 2 of 5</div>
+                <div class="search-box">📖 Reading and extracting key information...</div>
+                """, unsafe_allow_html=True)
+
+            t0 = time.time()
+            reader_agent = build_reader_agent(model)
+            reader_result = reader_agent.invoke({
+                "messages": [{
+                    "role": "user",
+                    "content": f"""Synthesize the research below into a structured report.
 
 **Topic:** {topic}
 
@@ -372,61 +588,228 @@ Structure:
 ## 6. Sources
 
 Guidelines: objective, factual, professional, minimum 500 words."""
-            }]
-        })
-        state["reader_output"] = reader_result["messages"][-1].content
+                }]
+            })
+            state["reader_output"] = reader_result["messages"][-1].content
+            state["timings"]["reader"] = round(time.time() - t0, 1)
 
-        # ── Step 3: Writer ──
-        render_agents(active=2, done=[0, 1])
-        with col_l:
-            output_area.markdown("""
-            <div class="step-badge">⟳ Step 3 of 4</div>
-            <div class="search-box">✍️ Writing the final research report...</div>
-            """, unsafe_allow_html=True)
+            # Step 3: Writer
+            render_agents(active=2, done=[0, 1])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 3 of 5</div>
+                <div class="search-box">✍️ Writing the research report...</div>
+                """, unsafe_allow_html=True)
 
-        writer_result = writer_chain.invoke({
-            "topic": topic,
-            "research": state["reader_output"]
-        })
-        state["research_report"] = writer_result
+            t0 = time.time()
+            writer = build_writer_chain(model)
+            report = writer.invoke({"topic": topic, "research": state["reader_output"]})
+            state["research_report"] = report
+            state["timings"]["writer"] = round(time.time() - t0, 1)
 
-        # ── Step 4: Critic ──
-        render_agents(active=3, done=[0, 1, 2])
-        with col_l:
-            output_area.markdown("""
-            <div class="step-badge">⟳ Step 4 of 4</div>
-            <div class="search-box">🎯 Critic agent reviewing the report...</div>
-            """, unsafe_allow_html=True)
+            # Step 4: Critic + Revision Loop
+            critic = build_critic_chain(model)
+            revision_chain = build_revision_chain(model)
 
-        critic_result = critic_chain.invoke({
-            "topic": topic,
-            "report": state["research_report"]
-        })
-        state["critic_feedback"] = critic_result
+            for rev in range(max_revisions):
+                render_agents(active=3, done=[0, 1, 2])
+                with col_l:
+                    output_area.markdown(f"""
+                    <div class="step-badge">⟳ Step 4 of 5 — Revision {rev + 1}/{max_revisions}</div>
+                    <div class="search-box">🎯 Critic reviewing report (revision {rev + 1})...</div>
+                    """, unsafe_allow_html=True)
 
-        render_agents(active=None, done=[0, 1, 2, 3])
+                t0 = time.time()
+                feedback = critic.invoke({"topic": topic, "report": state["research_report"]})
+                score = parse_critic_score(feedback)
+
+                state["revisions"].append({
+                    "revision": rev + 1,
+                    "score": score,
+                    "feedback": feedback,
+                    "time": round(time.time() - t0, 1),
+                })
+                state["critic_feedback"] = feedback
+                state["critic_score"] = score
+
+                if score >= score_threshold:
+                    break
+
+                if rev < max_revisions - 1:
+                    with col_l:
+                        output_area.markdown(f"""
+                        <div class="step-badge">⟳ Step 4 of 5 — Revising</div>
+                        <div class="search-box">↻ Score {score}/10 — revising report based on feedback...</div>
+                        """, unsafe_allow_html=True)
+                    state["research_report"] = revision_chain.invoke({
+                        "topic": topic,
+                        "report": state["research_report"],
+                        "feedback": feedback,
+                    })
+
+            # Step 5: Fact-Checker
+            render_agents(active=4, done=[0, 1, 2, 3])
+            with col_l:
+                output_area.markdown("""
+                <div class="step-badge">⟳ Step 5 of 5</div>
+                <div class="search-box">🔎 Fact-checking report against sources...</div>
+                """, unsafe_allow_html=True)
+
+            t0 = time.time()
+            fact_checker = build_fact_checker_chain(model)
+            fact_check = fact_checker.invoke({
+                "topic": topic,
+                "report": state["research_report"],
+                "raw_research": state["search_results"],
+            })
+            state["fact_check"] = fact_check
+            state["timings"]["fact_check"] = round(time.time() - t0, 1)
+
+            state["timings"]["total"] = round(time.time() - start_time, 1)
+
+        # ── All done ──────────────────────────────────────────────────────
+        render_agents(active=None, done=list(range(len(AGENT_DEFS))))
         output_area.empty()
 
         st.session_state.results = state
-        st.success("✅ Research pipeline complete!")
+
+        # Save to history
+        save_to_history(topic, state)
+
+        # Show completion
+        total = state["timings"].get("total", 0)
+        score = state.get("critic_score", 0)
+        revs = len(state.get("revisions", []))
+        st.success(f"Pipeline complete in {total}s | Final score: {score}/10 | Revisions: {revs}")
 
 
 # ── Results Display ───────────────────────────────────────────────────────────
 if st.session_state.results:
     results = st.session_state.results
-    tab1, tab2, tab3 = st.tabs(["📄  Final Report", "🎯  Critic Feedback", "🔍  Raw Research"])
+    score = results.get("critic_score", 0)
+
+    # Score badge
+    st.markdown(score_badge_html(score), unsafe_allow_html=True)
+
+    # Revision history summary
+    revisions = results.get("revisions", [])
+    if revisions:
+        scores = [r["score"] for r in revisions]
+        st.caption(f"Revision scores: {' → '.join(str(s) for s in scores)}")
+
+    tabs = ["📄 Final Report", "🎯 Critic Feedback", "🔎 Fact Check", "🔍 Raw Research", "⬇️ Export"]
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(tabs)
 
     with tab1:
-        st.markdown(f'<div class="report-box">{results["research_report"]}</div>', unsafe_allow_html=True)
-        st.download_button(
-            label="⬇️  Download Report",
-            data=results["research_report"],
-            file_name="research_report.md",
-            mime="text/markdown"
-        )
+        st.markdown(results.get("research_report", ""), unsafe_allow_html=False)
 
     with tab2:
-        st.markdown(f'<div class="critic-box">{results["critic_feedback"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="critic-box">{results.get("critic_feedback", "")}</div>', unsafe_allow_html=True)
+        # Show revision history
+        if len(revisions) > 1:
+            st.markdown("#### Revision History")
+            for r in revisions:
+                with st.expander(f"Revision {r['revision']} — Score: {r['score']}/10 ({r['time']}s)"):
+                    st.markdown(r["feedback"])
 
     with tab3:
-        st.markdown(f'<div class="search-box">{results.get("search_results", "")}</div>', unsafe_allow_html=True)
+        fact = results.get("fact_check", "No fact-check data available.")
+        st.markdown(f'<div class="fact-box">{fact}</div>', unsafe_allow_html=True)
+
+    with tab4:
+        st.markdown(
+            f'<div class="search-box">{results.get("search_results", "")}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with tab5:
+        st.markdown("#### Download Report")
+        report_text = results.get("research_report", "")
+        report_topic = topic if 'topic' in dir() else "Research Report"
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.download_button(
+                "📝 Markdown (.md)",
+                data=report_text,
+                file_name="research_report.md",
+                mime="text/markdown",
+            )
+        with col_b:
+            try:
+                import markdown
+                html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+                <title>Research Report</title>
+                <style>body{{font-family:Georgia,serif;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.8;}}</style>
+                </head><body>{markdown.markdown(report_text)}</body></html>"""
+                st.download_button(
+                    "🌐 HTML",
+                    data=html_content,
+                    file_name="research_report.html",
+                    mime="text/html",
+                )
+            except ImportError:
+                st.caption("Install `markdown` for HTML export")
+
+        with col_c:
+            try:
+                from fpdf import FPDF
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_auto_page_break(auto=True, margin=15)
+                pdf.set_font("Helvetica", "", 10)
+                for line in report_text.split("\n"):
+                    if line.startswith("## "):
+                        pdf.set_font("Helvetica", "B", 13)
+                        pdf.cell(0, 8, line.replace("## ", ""), new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font("Helvetica", "", 10)
+                    elif line.startswith("# "):
+                        pdf.set_font("Helvetica", "B", 15)
+                        pdf.cell(0, 10, line.replace("# ", ""), new_x="LMARGIN", new_y="NEXT")
+                        pdf.set_font("Helvetica", "", 10)
+                    elif line.strip():
+                        pdf.multi_cell(0, 6, line)
+                    else:
+                        pdf.ln(3)
+                st.download_button(
+                    "📕 PDF",
+                    data=bytes(pdf.output()),
+                    file_name="research_report.pdf",
+                    mime="application/pdf",
+                )
+            except ImportError:
+                st.caption("Install `fpdf2` for PDF export")
+
+        with col_d:
+            try:
+                from docx import Document
+                import io
+                doc = Document()
+                doc.add_heading("Research Report", level=0)
+                for line in report_text.split("\n"):
+                    if line.startswith("## "):
+                        doc.add_heading(line.replace("## ", ""), level=2)
+                    elif line.startswith("# "):
+                        doc.add_heading(line.replace("# ", ""), level=1)
+                    elif line.startswith("- "):
+                        doc.add_paragraph(line[2:], style="List Bullet")
+                    elif line.strip():
+                        doc.add_paragraph(line)
+                buf = io.BytesIO()
+                doc.save(buf)
+                st.download_button(
+                    "📘 Word (.docx)",
+                    data=buf.getvalue(),
+                    file_name="research_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            except ImportError:
+                st.caption("Install `python-docx` for Word export")
+
+    # Timing breakdown
+    timings = results.get("timings", {})
+    if timings:
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.caption(
+            " | ".join(f"{k}: {v}s" for k, v in timings.items())
+        )

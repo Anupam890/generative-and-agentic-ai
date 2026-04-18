@@ -1,17 +1,24 @@
 [project]
 name = "reasearch-agent"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "ResearchMind AI - Multi-agent research pipeline that automates web research with search, reader, writer, critic, and fact-checker agents."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "langchain>=1.2.15",
     "langchain-mistralai>=1.1.2",
+    "langchain-openai>=0.3.0",
+    "langchain-google-genai>=2.1.0",
     "langchainhub>=0.1.21",
+    "langgraph>=0.4.0",
     "lxml>=6.1.0",
     "python-dotenv>=1.2.2",
     "requests>=2.33.1",
     "streamlit>=1.56.0",
     "tavily-python>=0.7.23",
+    "fpdf2>=2.8.0",
+    "python-docx>=1.1.0",
+    "PyPDF2>=3.0.0",
+    "markdown>=3.5.0",
 ]
