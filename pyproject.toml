@@ -5,9 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
     "langchain>=1.2.15",
     "langchain-mistralai>=1.1.2",
     "langchainhub>=0.1.21",
+    "lxml>=6.1.0",
     "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
     "streamlit>=1.56.0",
+    "tavily-python>=0.7.23",
 ]

@@ -1,4 +1,6 @@
-import time
+import sys, os, time
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import streamlit as st
 from agents.agents import build_search_agent, build_reader_agent, writer_chain, critic_chain
 
@@ -278,7 +280,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("#### ⚙️ Configuration")
-    model = st.selectbox("Model", ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"], label_visibility="visible")
+    model = st.selectbox("Model", ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"], label_visibility="visible")
     depth = st.selectbox("Research Depth", ["Standard", "Deep", "Quick"])
     max_revisions = st.slider("Max Critic Revisions", 1, 5, 2)
 
@@ -290,7 +292,7 @@ with st.sidebar:
     st.markdown("<hr>", unsafe_allow_html=True)
     st.markdown("""
     <div style='font-size:0.7rem; color:#333355; text-align:center; padding-bottom:1rem;'>
-        Powered by LangChain · Tavily · GPT-4o
+        Powered by LangChain · Tavily · Mistral AI
     </div>
     """, unsafe_allow_html=True)
 

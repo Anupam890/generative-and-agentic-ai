@@ -1,6 +1,4 @@
-from langchain import hub
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_community.agent_toolkits.load_tools import get_all_tool_names
+from langgraph.prebuilt import create_react_agent
 from langchain_mistralai import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -17,14 +15,10 @@ llm_model = ChatMistralAI(api_key=os.getenv("MISTRAL_API_KEY"), model="mistral-s
 #first agent
 
 def build_search_agent():
-    prompt = hub.pull("hwchase17/react")
-    agent = create_react_agent(llm=llm_model, tools=[web_search], prompt=prompt)
-    return AgentExecutor(agent=agent, tools=[web_search], verbose=True)
+    return create_react_agent(model=llm_model, tools=[web_search])
 
 def build_reader_agent():
-    prompt = hub.pull("hwchase17/react")
-    agent = create_react_agent(llm=llm_model, tools=[web_scrape], prompt=prompt)
-    return AgentExecutor(agent=agent, tools=[web_scrape], verbose=True)
+    return create_react_agent(model=llm_model, tools=[web_scrape])
 
 # Writer Prompt
 
