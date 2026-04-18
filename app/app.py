@@ -1,8 +1,12 @@
 import time
 import os
+import sys
 import json
 import streamlit as st
 from datetime import datetime
+
+# Add project root to path so imports work when Streamlit runs app/app.py directly
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agents.agents import (
     build_search_agent,

@@ -207,6 +207,39 @@ def build_comparison_chain(model_name: str = "mistral-small-latest"):
     return comparison_prompt | llm | StrOutputParser()
 
 
+# ── Graph Data Extraction Chain ───────────────────────────────────────────────
+graph_data_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are a data analyst. Your job is to extract chartable numerical data from research reports.
+Analyze the report and identify any statistics, percentages, comparisons, rankings, trends, or numerical data
+that can be visualized as charts.
+
+You MUST respond with ONLY a valid JSON array. No explanation, no markdown, no code fences.
+If there is no chartable data, respond with exactly: []
+
+Each chart object in the array must have this exact structure:
+{{"title": "Chart Title", "type": "bar|pie|line", "labels": ["Label1", "Label2"], "values": [10, 20], "xlabel": "X Axis Label", "ylabel": "Y Axis Label"}}
+
+Rules:
+- "type" must be one of: "bar", "pie", "line"
+- "labels" and "values" must be arrays of the same length
+- "values" must contain only numbers (int or float)
+- Extract a maximum of 4 charts
+- Use "pie" for percentage breakdowns, "bar" for comparisons, "line" for trends over time
+- Only extract data that is explicitly stated with numbers in the report. Do NOT invent data."""),
+    ("human", """Extract chartable data from the following research report.
+
+**Report:**
+{report}
+
+Respond with ONLY a JSON array (no markdown, no code fences, no explanation):"""),
+])
+
+
+def build_graph_data_chain(model_name: str = "mistral-small-latest"):
+    llm = get_llm(model_name)
+    return graph_data_prompt | llm | StrOutputParser()
+
+
 def parse_critic_score(critic_text: str) -> int:
     """Extract the numeric score from critic feedback. Returns 0 if not found."""
     match = re.search(r'\*?\*?Score:?\s*(\d+)\s*/\s*10\*?\*?', critic_text, re.IGNORECASE)

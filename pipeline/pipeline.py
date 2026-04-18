@@ -3,10 +3,14 @@ ResearchMind AI - CLI Pipeline
 Supports: revision loop, fact-checking, multi-topic comparison, export formats.
 """
 import os
+import sys
 import json
 import time
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Add project root to path so imports work from any entry point
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 load_dotenv()
 
