@@ -810,14 +810,55 @@ if st.session_state.results:
 
         with col_c:
             try:
-                import io as _io
                 import tempfile
                 from fpdf import FPDF
+
+                def _sanitize_for_pdf(text):
+                    """Replace Unicode chars unsupported by Helvetica with ASCII equivalents."""
+                    replacements = {
+                        "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                        "\u2013": "-", "\u2014": "--", "\u2026": "...", "\u2022": "*",
+                        "\u00a0": " ", "\u200b": "", "\u2032": "'", "\u2033": '"',
+                        "\u2010": "-", "\u2011": "-", "\u2012": "-",
+                        "\u2015": "--", "\u2016": "||", "\u2017": "_",
+                        "\u2020": "+", "\u2021": "++", "\u2023": ">",
+                        "\u2039": "<", "\u203a": ">", "\u00ab": "<<", "\u00bb": ">>",
+                        "\u200e": "", "\u200f": "", "\u200c": "", "\u200d": "",
+                        "\ufeff": "", "\u2028": "\n", "\u2029": "\n",
+                    }
+                    for orig, repl in replacements.items():
+                        text = text.replace(orig, repl)
+                    # Strip markdown bold/italic markers
+                    import re as _re
+                    text = _re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', text)
+                    text = _re.sub(r'_{1,2}(.*?)_{1,2}', r'\1', text)
+                    # Force all remaining chars into latin-1 range
+                    cleaned = []
+                    for ch in text:
+                        try:
+                            ch.encode("latin-1")
+                            cleaned.append(ch)
+                        except UnicodeEncodeError:
+                            cleaned.append("?")
+                    return "".join(cleaned)
+
+                def _safe_multi_cell(pdf_obj, w, h, text):
+                    """Write text to PDF, breaking long words to avoid FPDF errors."""
+                    import textwrap
+                    # Break any word longer than 80 chars
+                    wrapped = textwrap.fill(text, width=100, break_long_words=True, break_on_hyphens=True)
+                    try:
+                        pdf_obj.multi_cell(w, h, wrapped)
+                    except Exception:
+                        # Last resort: truncate the line
+                        pdf_obj.multi_cell(w, h, wrapped[:500])
+
                 pdf = FPDF()
                 pdf.add_page()
                 pdf.set_auto_page_break(auto=True, margin=15)
                 pdf.set_font("Helvetica", "", 10)
                 for line in report_text.split("\n"):
+                    line = _sanitize_for_pdf(line)
                     if line.startswith("## "):
                         pdf.set_font("Helvetica", "B", 13)
                         pdf.cell(0, 8, line.replace("## ", ""), new_x="LMARGIN", new_y="NEXT")
@@ -827,7 +868,7 @@ if st.session_state.results:
                         pdf.cell(0, 10, line.replace("# ", ""), new_x="LMARGIN", new_y="NEXT")
                         pdf.set_font("Helvetica", "", 10)
                     elif line.strip():
-                        pdf.multi_cell(0, 6, line)
+                        _safe_multi_cell(pdf, 0, 6, line)
                     else:
                         pdf.ln(3)
 
@@ -844,7 +885,7 @@ if st.session_state.results:
                             tmp.write(chart_bytes)
                             tmp.close()
                             pdf.set_font("Helvetica", "B", 11)
-                            pdf.cell(0, 8, chart_title, new_x="LMARGIN", new_y="NEXT")
+                            pdf.cell(0, 8, _sanitize_for_pdf(chart_title), new_x="LMARGIN", new_y="NEXT")
                             pdf.image(tmp.name, w=180)
                             pdf.ln(6)
                         finally:
